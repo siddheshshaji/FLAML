@@ -22,7 +22,7 @@ jobs:
         echo $CONDA/bin >> $GITHUB_PATH
     - name: Install dependencies
       run: |
-        sudo chown 501:20 /usr/local/miniconda/pkgs/cache
+        sudo chown 501:20 /usr/local/miniconda/pkgs
         conda env create -f environment.yml
         conda activate cement
     - name: Lint with flake8
