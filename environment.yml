@@ -1,0 +1,20 @@
+name: cement
+
+channels:
+- conda-forge
+- nodefaults
+
+dependencies:
+- python==3.9
+- jupyterlab==3.1
+- pandas==1.3
+- scikit-learn==1.0
+- missingno
+- matplotlib
+- seaborn==0.11
+- dtale==1.56
+- pandas-profiling
+- sweetviz==2.1
+- pip
+- pip:
+    - flaml
