@@ -23,6 +23,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo chown 501:20 /usr/local/miniconda/pkgs
+        sudo chown 501:20 /usr/local/miniconda/pkgs/cache
         conda env create -f environment.yml
         conda activate cement
     - name: Lint with flake8
