@@ -148,7 +148,7 @@ class BaseEstimator:
         self._model = model
         return train_time
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         """Train the model from given training data
 
         Args:
@@ -304,6 +304,7 @@ class LGBMEstimator(BaseEstimator):
     @classmethod
     def search_space(cls, data_size, **params):
         upper = min(32768, int(data_size))
+        upper_round = max(min(round(1500000 / data_size), 150), 2)
         return {
             "n_estimators": {
                 "domain": tune.lograndint(lower=4, upper=upper),
@@ -342,6 +343,10 @@ class LGBMEstimator(BaseEstimator):
             "reg_lambda": {
                 "domain": tune.loguniform(lower=1 / 1024, upper=1024),
                 "init_value": 1.0,
+            },
+            "early_stopping_rounds": {
+                "domain": tune.randint(lower=0, upper=upper_round),
+                "init_value": 0,
             },
         }
 
@@ -394,7 +399,7 @@ class LGBMEstimator(BaseEstimator):
             X = X.to_numpy()
         return X
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         start_time = time.time()
         deadline = start_time + budget if budget else np.inf
         n_iter = self.params[self.ITER_HP]
@@ -468,9 +473,26 @@ class LGBMEstimator(BaseEstimator):
                 self.params[self.ITER_HP] = max_iter
         if self.params[self.ITER_HP] > 0:
             if self.HAS_CALLBACK:
-                self._fit(
-                    X_train, y_train, callbacks=self._callbacks(start_time, deadline), **kwargs
-                )
+                early_stop_rounds = self.params["early_stopping_rounds"]
+                if early_stop and early_stop_rounds > 0:
+                    n = max(int(len(y_train) * 0.9), len(y_train) - 1000)
+                    X_tr, y_tr = X_train[:n], y_train[:n]
+                    eval_set=[(X_train[n:], y_train[n:])]
+                else:
+                    eval_set = None
+                    X_tr, y_tr = X_train, y_train
+                if isinstance(self, XGBoostSklearnEstimator):
+                    self._fit(
+                        X_tr, y_tr, callbacks=self._callbacks(start_time, deadline),
+                        eval_set=eval_set, **kwargs
+                    )
+                else:
+                    self.params.pop("early_stopping_rounds")
+                    self._fit(
+                        X_tr, y_tr, callbacks=self._callbacks(start_time, deadline),
+                        eval_set=eval_set, early_stopping_rounds=early_stop_rounds, **kwargs
+                    )
+                    self.params["early_stopping_rounds"] = early_stop_rounds
                 best_iteration = (
                     self._model.get_booster().best_iteration
                     if isinstance(self, XGBoostSklearnEstimator)
@@ -508,6 +530,7 @@ class XGBoostEstimator(SKLearnEstimator):
     @classmethod
     def search_space(cls, data_size, **params):
         upper = min(32768, int(data_size))
+        upper_round = max(min(round(1500000 / data_size), 150), 2)
         return {
             "n_estimators": {
                 "domain": tune.lograndint(lower=4, upper=upper),
@@ -547,6 +570,10 @@ class XGBoostEstimator(SKLearnEstimator):
                 "domain": tune.loguniform(lower=1 / 1024, upper=1024),
                 "init_value": 1.0,
             },
+            "early_stopping_rounds": {
+                "domain": tune.randint(lower=0, upper=upper),
+                "init_value": 0,
+            },
         }
 
     @classmethod
@@ -576,7 +603,7 @@ class XGBoostEstimator(SKLearnEstimator):
         super().__init__(task, **config)
         self.params["verbosity"] = 0
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         import xgboost as xgb
 
         start_time = time.time()
@@ -683,10 +710,10 @@ class XGBoostSklearnEstimator(SKLearnEstimator, LGBMEstimator):
         elif task in CLASSIFICATION:
             self.estimator_class = xgb.XGBClassifier
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         if issparse(X_train):
             self.params["tree_method"] = "auto"
-        return super().fit(X_train, y_train, budget, **kwargs)
+        return super().fit(X_train, y_train, budget, early_stop, verbose=False, **kwargs)
 
     def _callbacks(self, start_time, deadline) -> List[Callable]:
         return XGBoostEstimator._callbacks(start_time, deadline)
@@ -891,7 +918,7 @@ class CatBoostEstimator(BaseEstimator):
 
             self.estimator_class = CatBoostClassifier
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         import shutil
 
         start_time = time.time()
@@ -902,25 +929,31 @@ class CatBoostEstimator(BaseEstimator):
             cat_features = list(X_train.select_dtypes(include="category").columns)
         else:
             cat_features = []
-        n = max(int(len(y_train) * 0.9), len(y_train) - 1000)
-        X_tr, y_tr = X_train[:n], y_train[:n]
+        model = self.estimator_class(train_dir=train_dir, **self.params)
+        from catboost import Pool, __version__
+
+        if early_stop:
+            n = max(int(len(y_train) * 0.9), len(y_train) - 1000)
+            X_tr, y_tr = X_train[:n], y_train[:n]
+            eval_set=Pool(
+                data=X_train[n:], label=y_train[n:], cat_features=cat_features
+            )
+        else:
+            X_tr, y_tr = X_train, y_train
+            eval_set = None
         if "sample_weight" in kwargs:
             weight = kwargs["sample_weight"]
             if weight is not None:
                 kwargs["sample_weight"] = weight[:n]
         else:
             weight = None
-        from catboost import Pool, __version__
 
-        model = self.estimator_class(train_dir=train_dir, **self.params)
         if __version__ >= "0.26":
             model.fit(
                 X_tr,
                 y_tr,
                 cat_features=cat_features,
-                eval_set=Pool(
-                    data=X_train[n:], label=y_train[n:], cat_features=cat_features
-                ),
+                eval_set=eval_set,
                 callbacks=CatBoostEstimator._callbacks(start_time, deadline),
                 **kwargs,
             )
@@ -929,9 +962,7 @@ class CatBoostEstimator(BaseEstimator):
                 X_tr,
                 y_tr,
                 cat_features=cat_features,
-                eval_set=Pool(
-                    data=X_train[n:], label=y_train[n:], cat_features=cat_features
-                ),
+                eval_set=eval_set,
                 **kwargs,
             )
         shutil.rmtree(train_dir, ignore_errors=True)
@@ -1046,7 +1077,7 @@ class Prophet(SKLearnEstimator):
         train_df = X_train.join(y_train)
         return train_df
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         from prophet import Prophet
 
         current_time = time.time()
@@ -1110,7 +1141,7 @@ class ARIMA(Prophet):
         train_df = train_df.drop(TS_TIMESTAMP_COL, axis=1)
         return train_df
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         import warnings
 
         warnings.filterwarnings("ignore")
@@ -1212,7 +1243,7 @@ class SARIMAX(ARIMA):
         }
         return space
 
-    def fit(self, X_train, y_train, budget=None, **kwargs):
+    def fit(self, X_train, y_train, budget=None, early_stop=True, **kwargs):
         import warnings
 
         warnings.filterwarnings("ignore")
