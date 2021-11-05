@@ -475,7 +475,7 @@ class LGBMEstimator(BaseEstimator):
                 self.params[self.ITER_HP] = max_iter
         if self.params[self.ITER_HP] > 0:
             if self.HAS_CALLBACK:
-                early_stop_rounds = self.params["early_stopping_rounds"]
+                early_stop_rounds = self.params.get("early_stopping_rounds", 0)
                 if early_stop and early_stop_rounds > 0:
                     n = max(int(len(y_train) * 0.9), len(y_train) - 1000)
                     X_tr, y_tr = X_train[:n], y_train[:n]
@@ -490,12 +490,12 @@ class LGBMEstimator(BaseEstimator):
                         eval_set=eval_set, **kwargs
                     )
                 else:
-                    self.params.pop("early_stopping_rounds")
+                    early_stopping_rounds = self.params.pop("early_stopping_rounds")
                     self._fit(
                         X_tr, y_tr, callbacks=self._callbacks(start_time, deadline),
                         eval_set=eval_set, early_stopping_rounds=early_stop_rounds, **kwargs
                     )
-                    self.params["early_stopping_rounds"] = early_stop_rounds
+                    self.params["early_stopping_rounds"] = early_stopping_rounds
                 best_iteration = (
                     self._model.get_booster().best_iteration
                     if isinstance(self, XGBoostSklearnEstimator)
