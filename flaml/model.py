@@ -137,7 +137,6 @@ class BaseEstimator:
                 #         (kwargs['X_val'], kwargs['y_val'])]
                 #     kwargs['verbose'] = False
                 #     del kwargs['groups_val'], kwargs['X_val'], kwargs['y_val']
-        X_train = self._preprocess(X_train)
         model = self.estimator_class(**self.params)
         if logger.level == logging.DEBUG:
             logger.debug(f"flaml.model - {model} fit started")
@@ -174,6 +173,7 @@ class BaseEstimator:
                     else -1,
                     budget,
                 ):
+                    X_train = self._preprocess(X_train)
                     train_time = self._fit(X_train, y_train, **kwargs)
             except (MemoryError, TimeoutError) as e:
                 logger.warning(f"{e.__class__} {e}")
@@ -186,6 +186,7 @@ class BaseEstimator:
                 self._model = model
                 train_time = time.time() - start_time
         else:
+            X_train = self._preprocess(X_train)
             train_time = self._fit(X_train, y_train, **kwargs)
         return train_time
 
@@ -404,6 +405,7 @@ class LGBMEstimator(BaseEstimator):
         deadline = start_time + budget if budget else np.inf
         n_iter = self.params[self.ITER_HP]
         trained = False
+        X_train = self._preprocess(X_train)
         if not self.HAS_CALLBACK:
             mem0 = psutil.virtual_memory().available if psutil is not None else 1
             if (
@@ -481,6 +483,7 @@ class LGBMEstimator(BaseEstimator):
                 else:
                     eval_set = None
                     X_tr, y_tr = X_train, y_train
+                    early_stop_rounds = 0
                 if isinstance(self, XGBoostSklearnEstimator):
                     self._fit(
                         X_tr, y_tr, callbacks=self._callbacks(start_time, deadline),
@@ -571,7 +574,7 @@ class XGBoostEstimator(SKLearnEstimator):
                 "init_value": 1.0,
             },
             "early_stopping_rounds": {
-                "domain": tune.randint(lower=0, upper=upper),
+                "domain": tune.randint(lower=0, upper=upper_round),
                 "init_value": 0,
             },
         }
